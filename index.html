@@ -156,38 +156,36 @@ video { display: block; width: 100%; height: auto; aspect-ratio: 960 / 544; back
 .caption { font-size: 14px; color: var(--muted); margin: 0; letter-spacing: 0.1em; }
 .sign { margin: 0; font-size: 15px; color: var(--muted); }
 .sign b { font-family: var(--display); font-weight: 400; font-size: 24px; color: var(--gold-soft); letter-spacing: 0.1em; }
+/* Size and rotation are set by script from the phone's real visible area */
 .stage {
   position: fixed;
-  inset: 0;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
   z-index: 100;
   background: #000;
-  display: grid;
-  place-items: center;
   overflow: hidden;
+  transform-origin: 0 0;
 }
 .stage video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
   aspect-ratio: auto;
   background: #000;
 }
-/* Phone held upright: turn the whole stage sideways so the video plays landscape */
-@media (orientation: portrait) {
-  .stage {
-    inset: auto;
-    top: 50%;
-    left: 50%;
-    width: 100vh;
-    height: 100vw;
-    width: 100dvh;
-    transform: translate(-50%, -50%) rotate(90deg);
-  }
-}
-.close {
+.stage-tools {
   position: absolute;
-  top: 14px;
-  right: 14px;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  right: max(12px, env(safe-area-inset-right, 0px));
+  display: flex;
+  gap: 10px;
+  z-index: 2;
+}
+.close, .turn {
   width: 40px; height: 40px;
   border-radius: 50%;
   border: 1px solid var(--gold);
@@ -196,10 +194,13 @@ video { display: block; width: 100%; height: auto; aspect-ratio: 960 / 544; back
   font-size: 24px;
   line-height: 1;
   cursor: pointer;
-  z-index: 2;
+  display: grid; place-items: center;
+  padding: 0;
 }
+.turn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.turn:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
+html.watching, body.watching { overflow: hidden; height: 100%; overscroll-behavior: none; }
 .close:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 3px; }
-body.watching { overflow: hidden; }
 @keyframes rise { from { opacity: 0.001; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { h1 span { animation: none; } button.play { transition: none; } }
 </style>
@@ -224,8 +225,13 @@ body.watching { overflow: hidden; }
 </main>
 
 <div class="stage" id="stage" role="dialog" aria-label="祝福视频" hidden>
-  <video id="vid" src="video.mp4" poster="poster.jpg" controls playsinline preload="metadata"></video>
-  <button class="close" id="closeBtn" type="button" aria-label="关闭视频">×</button>
+  <video id="vid" src="video.mp4" poster="poster.jpg" controls playsinline webkit-playsinline x5-playsinline x5-video-player-type="h5-page" x5-video-orientation="landscape|portrait" preload="metadata"></video>
+  <div class="stage-tools">
+    <button class="turn" id="turnBtn" type="button" aria-label="切换横屏或竖屏">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2M21 12a9 9 0 0 1-15.5 6.2"/><path d="M18.5 2v4h-4M5.5 22v-4h4"/></svg>
+    </button>
+    <button class="close" id="closeBtn" type="button" aria-label="关闭视频">×</button>
+  </div>
 </div>
 
 <script>
@@ -234,25 +240,70 @@ body.watching { overflow: hidden; }
   const stage = document.getElementById('stage');
   const closeBtn = document.getElementById('closeBtn');
 
+  const turnBtn = document.getElementById('turnBtn');
+  let wantLandscape = true;   // viewer can flip this with the rotate button
+
+  // Fit the stage to exactly what the phone shows right now. When the phone is
+  // upright and landscape is wanted, lay the stage sideways across the screen.
+  function layout() {
+    if (stage.hidden) return;
+    const vv = window.visualViewport;
+    const W = Math.round(vv ? vv.width : window.innerWidth);
+    const H = Math.round(vv ? vv.height : window.innerHeight);
+    const ox = vv ? vv.offsetLeft : 0;
+    const oy = vv ? vv.offsetTop : 0;
+    if (wantLandscape && H > W) {
+      stage.style.width = H + 'px';
+      stage.style.height = W + 'px';
+      stage.style.transform = `translate(${ox + W}px, ${oy}px) rotate(90deg)`;
+    } else {
+      stage.style.width = W + 'px';
+      stage.style.height = H + 'px';
+      stage.style.transform = `translate(${ox}px, ${oy}px)`;
+    }
+  }
+  window.addEventListener('resize', layout);
+  window.addEventListener('orientationchange', () => { layout(); setTimeout(layout, 300); });
+  window.visualViewport?.addEventListener('resize', layout);
+  window.visualViewport?.addEventListener('scroll', layout);
+  document.addEventListener('fullscreenchange', () => setTimeout(layout, 50));
+  document.addEventListener('webkitfullscreenchange', () => setTimeout(layout, 50));
+
+  turnBtn.addEventListener('click', () => {
+    wantLandscape = !wantLandscape;
+    if (!wantLandscape) { try { screen.orientation?.unlock?.(); } catch (e) {} }
+    layout();
+  });
+
   btn.addEventListener('click', () => {
     stage.hidden = false;
+    document.documentElement.classList.add('watching');
     document.body.classList.add('watching');
+    layout();
     stage.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 500, easing: 'ease-out' });
     vid.muted = false;
     const p = vid.play();
     if (p && p.catch) p.catch(() => {});
     // Try real fullscreen + landscape lock where the browser allows it; the CSS rotation covers the rest
     try {
-      const fs = stage.requestFullscreen ? stage.requestFullscreen({ navigationUI: 'hide' }) : null;
+      // Fullscreen the whole page, not the stage: browsers force `transform: none`
+      // on the fullscreen element itself, which would undo the sideways layout.
+      const root = document.documentElement;
+      const req = root.requestFullscreen || root.webkitRequestFullscreen;
+      const fs = req ? req.call(root, { navigationUI: 'hide' }) : null;
       if (fs && fs.then) {
-        fs.then(() => screen.orientation?.lock?.('landscape')).catch(() => {});
+        fs.then(() => screen.orientation?.lock?.('landscape'))
+          .then(layout, layout)
+          .catch(() => {});
       }
     } catch (e) {}
+    setTimeout(layout, 300);
   });
 
   function closeStage() {
     vid.pause();
     stage.hidden = true;
+    document.documentElement.classList.remove('watching');
     document.body.classList.remove('watching');
     try { screen.orientation?.unlock?.(); } catch (e) {}
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
